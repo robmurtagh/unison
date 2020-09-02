@@ -14,6 +14,8 @@ cradle:
               component: "unison-parser-typechecker:exe:tests"
             - path: "./parser-typechecker/transcripts"
               component: "unison-parser-typechecker:exe:transcripts"
+            - path: "./parser-typechecker/unison-lsp-server"
+              component: unison-parser-typechecker:exe:unison-lsp-server
 
             - path: "./unison-core/src"
               component: "unison-core:lib"
