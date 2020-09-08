@@ -301,6 +301,7 @@ executable unison-lsp-server
     lens-family-core,
     megaparsec,
     mtl,
+    rope-utf16-splay,
     safe,
     shellmet,
     template-haskell,

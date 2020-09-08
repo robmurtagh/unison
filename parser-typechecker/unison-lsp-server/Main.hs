@@ -11,7 +11,7 @@ import           Control.Monad.Trans (liftIO)
 import           Control.Monad.Trans.Except (ExceptT, throwE, catchE, runExceptT)
 import           Control.Monad.Trans.State.Strict (StateT, execStateT)
 import           Data.Default (Default(def))
-import           Data.Text (Text)
+import           Data.Text (pack, Text)
 import qualified Language.Haskell.LSP.Control as LSP.Control
 import qualified Language.Haskell.LSP.Core as LSP.Core
 import qualified Language.Haskell.LSP.Messages as LSP.Messages
@@ -20,6 +20,8 @@ import qualified Language.Haskell.LSP.Utility as U
 import           Lens.Family (LensLike')
 import qualified Language.Haskell.LSP.Types.Lens as J
 import qualified System.Log.Logger
+import qualified Language.Haskell.LSP.VFS as LSP
+import qualified Data.Rope.UTF16 as Rope
 
 ------------------------------------------------------------------------------
 -- Logger
@@ -81,16 +83,22 @@ nullHandler _ _ = do
   -- liftIO $ U.logs "I've been hit 🙀"
   return ()
 
-hoverHandler ::  MVar ServerState -> LSP.Core.Handler J.HoverRequest
+hoverHandler :: MVar ServerState -> LSP.Core.Handler J.HoverRequest
 hoverHandler state request = do
-    -- let uri = request ^. J.params . J.textDocument . J.uri
-    -- liftIO $ U.logs (show uri)
-    let _range = Just $ J.Range (J.Position 1 1) (J.Position 6 14)
-    let _contents = J.HoverContents $ J.unmarkedUpContent "lsp-hello"
-    let hover = Just $ J.Hover{ .. }
-    let response = LSP.Core.makeResponseMessage request hover
-    lf <- readMVar state
-    LSP.Core.sendFunc (_lspFuncs lf) $ LSP.Messages.RspHover response
+  let constructResponse x = J.HoverContents $ J.unmarkedUpContent x
+  let uri = request ^. J.params . J.textDocument . J.uri
+      -- line = request ^. J.params . J.position . J.line
+      -- col = request ^. J.params . J.position . J.character
+      _range = Just $ J.Range (J.Position 1 1) (J.Position 6 14)
+  serverState <- readMVar state
+  let lspFuncs = _lspFuncs serverState
+      getVirtualFileFunc = LSP.Core.getVirtualFileFunc lspFuncs
+      sendFunc = LSP.Core.sendFunc lspFuncs
+  file <- getVirtualFileFunc (J.toNormalizedUri uri)
+  let _contents = case file of
+        Just (LSP.VirtualFile _ _ rope) -> constructResponse $ Rope.toText rope
+        Nothing -> constructResponse $ pack $ show uri
+  sendFunc $ LSP.Messages.RspHover $ LSP.Core.makeResponseMessage request $ Just $ J.Hover {..}
   
 
 lspHandlers :: MVar ServerState -> LSP.Core.Handlers
