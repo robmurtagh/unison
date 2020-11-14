@@ -288,6 +288,7 @@ executable unison-lsp-server
   default-language: Haskell2010
   ghc-options: -Wall -fno-warn-name-shadowing -fno-warn-missing-pattern-synonym-signatures -fno-warn-unused-imports -rtsopts
   build-depends:
+    aeson,
     base,
     containers,
     configurator,

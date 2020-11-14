@@ -30,6 +30,9 @@ import qualified Unison.ABT as ABT
 import Unison.Term (Term)
 import qualified Unison.Var as Var
 import Data.Map ((!))
+import Data.Aeson (Value(String))
+import qualified Unison.Lexer as Lexer
+import Data.Maybe (mapMaybe)
 
 ------------------------------------------------------------------------------
 -- Logger
@@ -91,6 +94,39 @@ nullHandler _ _ = do
   -- liftIO $ U.logs "I've been hit 🙀"
   return ()
 
+-- !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+-- N.B. NO ATTEMPT WHATSOEVER HAS BEEN MADE TO PUT THE FOLLOWING CODE IN A PRODUCTION-READY STATE
+-- THIS IS FOR EXPERIMENTATION ONLY!
+-- !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+codeLensHandler :: MVar ServerState -> LSP.Core.Handler J.CodeLensRequest
+codeLensHandler state request = do
+  serverState <- readMVar state
+  let uri = request ^. J.params . J.textDocument . J.uri
+      lspFuncs = _lspFuncs serverState
+      getVirtualFileFunc = LSP.Core.getVirtualFileFunc lspFuncs
+      sendFunc = LSP.Core.sendFunc lspFuncs
+  file <- getVirtualFileFunc (J.toNormalizedUri uri)
+  let _fileContents = case file of
+        Just (LSP.VirtualFile _ _ rope) -> Just $ Rope.toText rope
+        Nothing -> Nothing
+  let fileName = show uri
+  let parserEnv = Parser.ParsingEnv mempty (Names.Names Builtin.names0 mempty)
+  let _parsed :: Maybe (Either (Parser.Err Symbol.Symbol) (UnisonFile Symbol.Symbol Parser.Ann)) = case _fileContents of 
+        Just contents -> Just $ Parsers.parseFile fileName (Text.unpack contents) parserEnv
+        Nothing -> Nothing
+  let codeLenses = case _parsed of
+        Just parsedFile -> J.List $ constructCodeLenses parsedFile
+        Nothing -> J.List []
+  sendFunc $ LSP.Messages.RspCodeLens $ LSP.Core.makeResponseMessage request codeLenses
+
+executeCommandHandler :: MVar ServerState -> LSP.Core.Handler J.ExecuteCommandRequest
+executeCommandHandler state request = do
+  serverState <- readMVar state
+  let lspFuncs = _lspFuncs serverState
+      sendFunc = LSP.Core.sendFunc lspFuncs
+  sendFunc $ LSP.Messages.RspExecuteCommand $ LSP.Core.makeResponseMessage request $ String "Cool, I've done that"
+
 hoverHandler :: MVar ServerState -> LSP.Core.Handler J.HoverRequest
 hoverHandler state request = do
   let constructResponse x = J.HoverContents $ J.unmarkedUpContent x
@@ -117,7 +153,6 @@ hoverHandler state request = do
   let x = show _parsed
   infoM "haskell-lsp.runWith" x
   sendFunc $ LSP.Messages.RspHover $ LSP.Core.makeResponseMessage request $ Just $ J.Hover {..}
-  
 
 printParserResult :: Either (Parser.Err Symbol.Symbol) (UnisonFile Symbol.Symbol Parser.Ann) -> String
 printParserResult (Left err) = show err
@@ -126,10 +161,25 @@ printParserResult (Right (UnisonFileId _dataDeclarationsId _effectDeclarationsId
 printTerm :: Term Symbol.Symbol Parser.Ann -> String
 printTerm (ABT.Term freeVars annotation out) = show annotation ++ show (ABT.Term freeVars annotation out)
 
+constructCodeLenses :: Either (Parser.Err Symbol.Symbol) (UnisonFile Symbol.Symbol Parser.Ann) -> [J.CodeLens]
+constructCodeLenses (Left _) = []
+constructCodeLenses (Right (UnisonFileId _ _ terms _)) = mapMaybe (constructCodeLensForTerm . snd) terms
+
+-- terms = [(User "y",10),(User "z",15)]
+
+constructCodeLensForTerm :: Term Symbol.Symbol Parser.Ann -> Maybe J.CodeLens
+constructCodeLensForTerm (ABT.Term _ annotation _) = constructCodeLensForAnn annotation
+
+constructCodeLensForAnn :: Parser.Ann -> Maybe J.CodeLens
+constructCodeLensForAnn (Parser.Ann (Lexer.Pos startLine _) _) = Just $ J.CodeLens { _range=J.Range (J.Position (startLine-1) 0) (J.Position (startLine-1) 0), _command=Just $ J.Command {_title="Add to Codebase", _command="UNISON_ADD_DEFINITION_TO_CODEBASE", _arguments=Nothing}, _xdata=Nothing}
+constructCodeLensForAnn _ = Nothing
+
 lspHandlers :: MVar ServerState -> LSP.Core.Handlers
 lspHandlers state = def {
           LSP.Core.initializedHandler                       = Just $ nullHandler state
         , LSP.Core.hoverHandler                             = Just $ hoverHandler state
+        , LSP.Core.codeLensHandler                          = Just $ codeLensHandler state
+        , LSP.Core.executeCommandHandler                    = Just $ executeCommandHandler state
         , LSP.Core.didOpenTextDocumentNotificationHandler   = Just $ nullHandler state
         , LSP.Core.didChangeTextDocumentNotificationHandler = Just $ nullHandler state
         , LSP.Core.didSaveTextDocumentNotificationHandler   = Just $ nullHandler state
@@ -161,7 +211,10 @@ syncOptions = J.TextDocumentSyncOptions
 
 -- Tells the LSP client what capabilities the server has
 lspOptions :: LSP.Core.Options
-lspOptions = def { LSP.Core.textDocumentSync = Just syncOptions }
+lspOptions = def
+  { LSP.Core.textDocumentSync       = Just syncOptions
+  , LSP.Core.executeCommandCommands = Just ["UNISON_ADD_DEFINITION_TO_CODEBASE"]
+  }
 
 run :: Maybe FilePath -> IO ()
 run mlog = do
