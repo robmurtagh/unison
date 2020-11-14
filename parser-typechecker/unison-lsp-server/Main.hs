@@ -1,3 +1,4 @@
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -5,23 +6,30 @@
 module Main where
 
 import           Control.Concurrent.MVar
-import           Control.Lens ((^.), use, uses, assign, modifying)
+import           Control.Lens ((^.))
 import           Control.Lens.TH (makeLenses)
-import           Control.Monad.Trans (liftIO)
-import           Control.Monad.Trans.Except (ExceptT, throwE, catchE, runExceptT)
-import           Control.Monad.Trans.State.Strict (StateT, execStateT)
 import           Data.Default (Default(def))
 import           Data.Text (pack, Text)
 import qualified Language.Haskell.LSP.Control as LSP.Control
 import qualified Language.Haskell.LSP.Core as LSP.Core
 import qualified Language.Haskell.LSP.Messages as LSP.Messages
 import qualified Language.Haskell.LSP.Types as J
-import qualified Language.Haskell.LSP.Utility as U
-import           Lens.Family (LensLike')
 import qualified Language.Haskell.LSP.Types.Lens as J
 import qualified System.Log.Logger
 import qualified Language.Haskell.LSP.VFS as LSP
 import qualified Data.Rope.UTF16 as Rope
+import qualified Unison.Parsers as Parsers
+import qualified Unison.Parser as Parser
+import qualified Unison.Names3 as Names
+import qualified Unison.Builtin as Builtin
+import qualified Data.Text as Text
+import Unison.UnisonFile( UnisonFile( UnisonFileId ) )
+import qualified Unison.Symbol as Symbol
+import System.Log.Logger (infoM)
+import qualified Unison.ABT as ABT
+import Unison.Term (Term)
+import qualified Unison.Var as Var
+import Data.Map ((!))
 
 ------------------------------------------------------------------------------
 -- Logger
@@ -95,11 +103,28 @@ hoverHandler state request = do
       getVirtualFileFunc = LSP.Core.getVirtualFileFunc lspFuncs
       sendFunc = LSP.Core.sendFunc lspFuncs
   file <- getVirtualFileFunc (J.toNormalizedUri uri)
-  let _contents = case file of
-        Just (LSP.VirtualFile _ _ rope) -> constructResponse $ Rope.toText rope
-        Nothing -> constructResponse $ pack $ show uri
+  let _fileContents = case file of
+        Just (LSP.VirtualFile _ _ rope) -> Just $ Rope.toText rope
+        Nothing -> Nothing
+  let fileName = show uri
+  let parserEnv = Parser.ParsingEnv mempty (Names.Names Builtin.names0 mempty)
+  let _parsed :: Maybe (Either (Parser.Err Symbol.Symbol) (UnisonFile Symbol.Symbol Parser.Ann)) = case _fileContents of 
+        Just contents -> Just $ Parsers.parseFile fileName (Text.unpack contents) parserEnv
+        Nothing -> Nothing
+  let _contents = case _parsed of
+        Just x -> constructResponse $ pack (printParserResult x)
+        Nothing -> constructResponse $ pack fileName
+  let x = show _parsed
+  infoM "haskell-lsp.runWith" x
   sendFunc $ LSP.Messages.RspHover $ LSP.Core.makeResponseMessage request $ Just $ J.Hover {..}
   
+
+printParserResult :: Either (Parser.Err Symbol.Symbol) (UnisonFile Symbol.Symbol Parser.Ann) -> String
+printParserResult (Left err) = show err
+printParserResult (Right (UnisonFileId _dataDeclarationsId _effectDeclarationsId terms watches)) = (concat $ map (printTerm . snd) terms) ++ (concat $ map (printTerm . snd) (watches ! Var.RegularWatch))
+ 
+printTerm :: Term Symbol.Symbol Parser.Ann -> String
+printTerm (ABT.Term freeVars annotation out) = show annotation ++ show (ABT.Term freeVars annotation out)
 
 lspHandlers :: MVar ServerState -> LSP.Core.Handlers
 lspHandlers state = def {
@@ -140,7 +165,6 @@ lspOptions = def { LSP.Core.textDocumentSync = Just syncOptions }
 
 run :: Maybe FilePath -> IO ()
 run mlog = do
-  liftIO $ U.logs "Log 1"
   setupLogger mlog
   state <- newEmptyMVar
 
